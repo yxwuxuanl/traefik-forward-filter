@@ -1,0 +1,9 @@
+displayName: forwardfilter
+
+type: middleware
+
+import: github.com/yxwuxuanl/traefik-forward-filter
+
+summary: traefik-forward-filter
+
+testData: { }
