@@ -5,11 +5,11 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"github.com/yxwuxuanl/traefik-forward-filter/connectionheader"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -17,6 +17,8 @@ const (
 	FailureIgnore = "ignore"
 	FailureAbort  = "abort"
 )
+
+const DefaultForwardTimeout = time.Millisecond * 100
 
 var defaultFailureStatusCode = []int{500, 502, 503, 504}
 
@@ -43,6 +45,10 @@ type ForwardFilter struct {
 	u      url.URL
 }
 
+var requestPool = sync.Pool{New: func() any {
+	return new(http.Request)
+}}
+
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	u, err := url.Parse(config.Address)
 
@@ -50,17 +56,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, err
 	}
 
-	timeout := config.RequestTimeout
+	var timeout time.Duration
 
-	if timeout == 0 {
-		timeout = 100
+	if config.RequestTimeout > 0 {
+		timeout = time.Duration(config.RequestTimeout) * time.Millisecond
+	} else {
+		timeout = DefaultForwardTimeout
 	}
 
 	client := &http.Client{
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: time.Duration(timeout) * time.Millisecond,
+		Timeout: timeout,
 	}
 
 	if config.InsecureSkipVerify {
@@ -95,21 +103,29 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		u:      *u,
 	}
 
-	return connectionheader.Remover(ff), nil
+	return Remover(ff), nil
 }
 
 func (f *ForwardFilter) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	forwardReq := requestPool.Get().(*http.Request)
+	defer func() {
+		forwardReq.Header = nil
+		forwardReq.Body = nil
+		forwardReq.URL = nil
+		forwardReq.Method = http.MethodGet
+
+		requestPool.Put(forwardReq)
+	}()
+
 	u := f.u
 
 	if u.Path == "" {
 		u.Path = r.RequestURI
 	}
 
-	forwardReq := new(http.Request)
 	forwardReq.URL = &u
-	forwardReq.Header = make(http.Header)
-
 	writeHeader(r, forwardReq, f.RequestHeaders)
+
 	if f.ForwardHeaders != nil {
 		for k, v := range f.ForwardHeaders {
 			forwardReq.Header.Set("X-Forwarded-"+k, v)

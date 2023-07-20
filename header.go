@@ -3,6 +3,7 @@ package traefik_forward_filter
 import (
 	"net"
 	"net/http"
+	"net/textproto"
 	"strings"
 )
 
@@ -30,19 +31,18 @@ var hopHeaders = []string{
 }
 
 func writeHeader(req, forwardReq *http.Request, allowedHeaders []string) {
+	forwardReq.Header = make(http.Header)
+
 	if len(allowedHeaders) == 0 {
 		for k, vv := range req.Header {
 			forwardReq.Header[k] = append(req.Header[k], vv...)
 		}
 	} else {
-		headers := make(http.Header)
-
 		for _, header := range allowedHeaders {
 			if v := req.Header.Get(header); v != "" {
-				headers.Set(header, v)
+				forwardReq.Header.Set(header, v)
 			}
 		}
-		forwardReq.Header = headers
 	}
 
 	for _, header := range hopHeaders {
@@ -69,6 +69,31 @@ func writeHeader(req, forwardReq *http.Request, allowedHeaders []string) {
 			forwardReq.Header.Set(XForwardedProto, "https")
 		} else {
 			forwardReq.Header.Set(XForwardedProto, "http")
+		}
+	}
+}
+
+const (
+	connectionHeader = "Connection"
+	upgradeHeader    = "Upgrade"
+)
+
+// Remover removes hop-by-hop headers listed in the "Connection" header.
+// See RFC 7230, section 6.1.
+func Remover(next http.Handler) http.HandlerFunc {
+	return func(rw http.ResponseWriter, req *http.Request) {
+		removeConnectionHeaders(req.Header)
+		req.Header.Del(connectionHeader)
+		next.ServeHTTP(rw, req)
+	}
+}
+
+func removeConnectionHeaders(h http.Header) {
+	for _, f := range h[connectionHeader] {
+		for _, sf := range strings.Split(f, ",") {
+			if sf = textproto.TrimString(sf); sf != "" {
+				h.Del(sf)
+			}
 		}
 	}
 }
